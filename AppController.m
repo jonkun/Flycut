@@ -25,6 +25,110 @@
 #import <ServiceManagement/ServiceManagement.h>
 #import <Carbon/Carbon.h>
 
+@interface AppController () {
+	NSCache *menuThumbnailCache;
+}
+- (NSImage *)menuThumbnailForClipping:(FlycutClipping *)clipping;
+- (void)addImageClippingToPasteboard:(FlycutClipping *)clipping;
+- (BOOL)placeClippingOnPasteboard:(FlycutClipping *)clipping;
+@end
+
+// Prefer real bitmap data. TIFF is last because a copied file often carries only an icon TIFF.
+static NSArray *FlycutImagePasteboardTypes(void) {
+	return [NSArray arrayWithObjects:
+			NSPasteboardTypePNG,
+			@"public.jpeg",
+			@"public.jpg",
+			@"public.gif",
+			@"com.compuserve.gif",
+			@"public.heic",
+			@"public.heif",
+			@"public.bmp",
+			@"com.microsoft.bmp",
+			@"public.webp",
+			NSPasteboardTypeTIFF,
+			@"public.tiff",
+			@"NeXT TIFF v4.0 pasteboard type",
+			nil];
+}
+
+// Copying a file puts the file on the pasteboard. A thumbnail next to that file URL is the icon, not an image the user copied.
+static BOOL FlycutPasteboardRepresentsCopiedFile(NSArray *types) {
+	return [types containsObject:@"public.file-url"] || [types containsObject:@"NSFilenamesPboardType"];
+}
+
+// Returns a UTI we can store as-is, or nil when the bytes should be rewritten as PNG.
+static NSString *FlycutNormalizedImageType(NSString *type) {
+	if ([type isEqualToString:@"public.jpg"] || [type isEqualToString:@"public.jpeg"])
+		return @"public.jpeg";
+	if ([type isEqualToString:@"public.gif"] || [type isEqualToString:@"com.compuserve.gif"])
+		return @"public.gif";
+	if ([type isEqualToString:NSPasteboardTypePNG] || [type isEqualToString:@"public.png"])
+		return @"public.png";
+	return nil;
+}
+
+static BOOL FlycutStoreImageData(NSData *data, NSString *type, NSData **outData, NSString **outType, int *outWidth, int *outHeight) {
+	if (data.length == 0)
+		return NO;
+	NSImage *image = [[NSImage alloc] initWithData:data];
+	if (!image)
+		return NO;
+
+	NSBitmapImageRep *rep = nil;
+	for (NSImageRep *candidate in [image representations]) {
+		if ([candidate isKindOfClass:[NSBitmapImageRep class]]) {
+			rep = (NSBitmapImageRep *)candidate;
+			break;
+		}
+	}
+
+	int width = 0;
+	int height = 0;
+	if (rep) {
+		width = (int)[rep pixelsWide];
+		height = (int)[rep pixelsHigh];
+	} else {
+		width = (int)MAX(1, image.size.width);
+		height = (int)MAX(1, image.size.height);
+	}
+
+	NSString *normalized = FlycutNormalizedImageType(type);
+	NSData *stored = nil;
+	NSString *storedType = nil;
+	if (normalized) {
+		stored = data;
+		storedType = normalized;
+	} else if (rep) {
+		stored = [rep representationUsingType:NSBitmapImageFileTypePNG properties:[NSDictionary dictionary]];
+		storedType = @"public.png";
+	}
+
+	if (stored.length == 0) {
+		NSRect proposed = NSMakeRect(0, 0, MAX(image.size.width, 1), MAX(image.size.height, 1));
+		CGImageRef cgImage = [image CGImageForProposedRect:&proposed context:nil hints:nil];
+		if (cgImage) {
+			NSBitmapImageRep *drawn = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
+			stored = [drawn representationUsingType:NSBitmapImageFileTypePNG properties:[NSDictionary dictionary]];
+			if (width <= 0)
+				width = (int)[drawn pixelsWide];
+			if (height <= 0)
+				height = (int)[drawn pixelsHigh];
+			[drawn release];
+		}
+		storedType = @"public.png";
+	}
+
+	[image release];
+	if (stored.length == 0 || width <= 0 || height <= 0)
+		return NO;
+	if (outData) *outData = stored;
+	if (outType) *outType = storedType;
+	if (outWidth) *outWidth = width;
+	if (outHeight) *outHeight = height;
+	return YES;
+}
+
 @implementation AppController
 
 /// Determines, through a hack of sorts, if the app is running sandboxed. The SANDBOXING define has no direct connection to being sandboxed, but this method identifies the state by looking for a directory which will have at least eight path components if sandboxed and is quite unlikely to have that many if not sandboxed. Of course, if this doesn't work for your unique case, just do a custom build with this method returning NO.
@@ -747,9 +851,8 @@
 
 - (void)pasteFromStack
 {
-	NSString *content = [flycutOperator getPasteFromStackPosition];
-	if ( nil != content ) {
-		[self addClipToPasteboard:content];
+	FlycutClipping *clipping = [flycutOperator clippingForPasteFromIndex:[flycutOperator stackPosition]];
+	if ( clipping && [self placeClippingOnPasteboard:clipping] ) {
 		[self performSelector:@selector(hideApp) withObject:nil afterDelay:0.2];
 		[self performSelector:@selector(fakeCommandV) withObject:nil afterDelay:0.2];
 	} else {
@@ -777,12 +880,9 @@
         position = [mapping[position] intValue];
     }
 
-    NSString *content = [flycutOperator getPasteFromIndex: position];
-    if ( nil != content )
-    {
-        [self addClipToPasteboard:content];
+    FlycutClipping *clipping = [flycutOperator clippingForPasteFromIndex:position];
+    if ( clipping && [self placeClippingOnPasteboard:clipping] )
         [self updateMenu];
-	}
 }
 
 - (void)metaKeysReleased
@@ -863,52 +963,90 @@
 
 -(void)pollPB:(NSTimer *)timer
 {
-    NSString *type = [jcPasteboard availableTypeFromArray:[NSArray arrayWithObject:NSStringPboardType]];
-    if ( [pbCount intValue] != [jcPasteboard changeCount] && ![flycutOperator storeDisabled] ) {
-        // Reload pbCount with the current changeCount
-        // Probably poor coding technique, but pollPB should be the only thing messing with pbCount, so it should be okay
-        [pbCount release];
-        pbCount = [[NSNumber numberWithInt:[jcPasteboard changeCount]] retain];
-        if ( type != nil ) {
-			NSRunningApplication *currRunningApp = nil;
-			for (NSRunningApplication *currApp in [[NSWorkspace sharedWorkspace] runningApplications])
-				if ([currApp isActive])
-					currRunningApp = currApp;
-			bool largeCopyRisk = nil != currRunningApp && [[currRunningApp localizedName] rangeOfString:@"Remote Desktop Connection"].location != NSNotFound;
+    if ( [pbCount intValue] == [jcPasteboard changeCount] || [flycutOperator storeDisabled] )
+        return;
 
-			// Microsoft's Remote Desktop Connection has an issue with large copy actions, which appears to be in the time it takes to transer them over the network.  The copy starts being registered with OS X prior to completion of the transfer, and if the active application changes during the transfer the copy will be lost.  Indicate this time period by toggling the menu icon at the beginning of all RDC trasfers and back at the end.  Apple's Screen Sharing does not demonstrate this problem.
-			if (largeCopyRisk)
-				[self toggleMenuIconDisabled];
+    NSArray *types = [jcPasteboard types];
+    NSString *stringType = [jcPasteboard availableTypeFromArray:[NSArray arrayWithObject:NSStringPboardType]];
+    NSString *imageType = [jcPasteboard availableTypeFromArray:FlycutImagePasteboardTypes()];
+    // Reload pbCount with the current changeCount
+    // Probably poor coding technique, but pollPB should be the only thing messing with pbCount, so it should be okay
+    [pbCount release];
+    pbCount = [[NSNumber numberWithInt:[jcPasteboard changeCount]] retain];
+    if ( stringType == nil && imageType == nil )
+        return;
 
-			// In case we need to do a status visual, this will be dispatched out so our thread isn't blocked.
-			dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-			dispatch_async(queue, ^{
+    NSRunningApplication *currRunningApp = nil;
+    for (NSRunningApplication *currApp in [[NSWorkspace sharedWorkspace] runningApplications])
+        if ([currApp isActive])
+            currRunningApp = currApp;
+    bool largeCopyRisk = nil != currRunningApp && [[currRunningApp localizedName] rangeOfString:@"Remote Desktop Connection"].location != NSNotFound;
 
-				// This operation blocks until the transfer is complete, though it was was here before the RDC issue was discovered.  Convenient.
-                NSString *contents = [jcPasteboard stringForType:type];
+    // Microsoft's Remote Desktop Connection has an issue with large copy actions, which appears to be in the time it takes to transer them over the network.  The copy starts being registered with OS X prior to completion of the transfer, and if the active application changes during the transfer the copy will be lost.  Indicate this time period by toggling the menu icon at the beginning of all RDC trasfers and back at the end.  Apple's Screen Sharing does not demonstrate this problem.
+    if (largeCopyRisk)
+        [self toggleMenuIconDisabled];
 
-				// Toggle back if dealing with the RDC issue.
-				if (largeCopyRisk) {
-					dispatch_async(dispatch_get_main_queue(), ^{
-						[self toggleMenuIconDisabled];
-					});
-				}
+    // In case we need to do a status visual, this will be dispatched out so our thread isn't blocked.
+    dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+    dispatch_async(queue, ^{
 
-				if ( contents == nil || [flycutOperator shouldSkip:contents ofType:[jcPasteboard availableTypeFromArray:[NSArray arrayWithObject:NSStringPboardType]] fromAvailableTypes:[jcPasteboard types]] ) {
-                   DLog(@"Contents: Empty or skipped");
-               } else {
-                   // Dispatch back to main queue to safely modify the clipping store and update UI.
-                   // jcList (NSMutableArray) is not thread-safe, and concurrent access from this
-                   // background queue and the main thread (e.g. showing the bezel) causes crashes.
-                   dispatch_async(dispatch_get_main_queue(), ^{
-                       if ( ! [pbCount isEqualTo:pbBlockCount] ) {
-                           [flycutOperator addClipping:contents ofType:type fromApp:[currRunningApp localizedName] withAppBundleURL:currRunningApp.bundleURL.path target:self clippingAddedSelector:@selector(updateMenu)];
-                       }
-                   });
-               }
+        // This operation blocks until the transfer is complete, though it was was here before the RDC issue was discovered.  Convenient.
+        NSString *contents = stringType ? [jcPasteboard stringForType:stringType] : nil;
+        // An image is the clipping when there is no real text alongside it. A copied file's icon is not an image clipping.
+        NSData *imageData = nil;
+        NSString *usedImageType = nil;
+        if ( imageType && [FlycutOperator stringIsAncillaryToImage:contents] && !FlycutPasteboardRepresentsCopiedFile(types) ) {
+            usedImageType = imageType;
+            imageData = [jcPasteboard dataForType:imageType];
+        }
+
+        // Toggle back if dealing with the RDC issue.
+        if (largeCopyRisk) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self toggleMenuIconDisabled];
             });
-        } 
-    }
+        }
+
+        // Dispatch back to main queue to safely modify the clipping store and update UI.
+        // jcList (NSMutableArray) is not thread-safe, and concurrent access from this
+        // background queue and the main thread (e.g. showing the bezel) causes crashes.
+        // NSImage conversion stays on the main thread as well.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if ( [pbCount isEqualTo:pbBlockCount] )
+                return;
+
+            NSString *skipType = imageData ? usedImageType : stringType;
+            if ( skipType && [flycutOperator shouldSkip:contents ofType:skipType fromAvailableTypes:types] ) {
+                DLog(@"Contents: Empty or skipped");
+                return;
+            }
+
+            if ( imageData.length > 0 ) {
+                NSData *stored = nil;
+                NSString *storedType = nil;
+                int width = 0;
+                int height = 0;
+                if ( FlycutStoreImageData(imageData, usedImageType, &stored, &storedType, &width, &height) ) {
+                    [flycutOperator addImageClipping:stored
+                                              width:width
+                                             height:height
+                                         searchText:contents
+                                             ofType:storedType
+                                            fromApp:[currRunningApp localizedName]
+                                  withAppBundleURL:currRunningApp.bundleURL.path
+                                            target:self
+                             clippingAddedSelector:@selector(updateMenu)];
+                    return;
+                }
+            }
+
+            if ( contents.length > 0 ) {
+                [flycutOperator addClipping:contents ofType:stringType fromApp:[currRunningApp localizedName] withAppBundleURL:currRunningApp.bundleURL.path target:self clippingAddedSelector:@selector(updateMenu)];
+            } else {
+                DLog(@"Contents: Empty or skipped");
+            }
+        });
+    });
 }
 
 - (void)processBezelKeyDown:(NSEvent *)theEvent {
@@ -1296,29 +1434,35 @@ didFailToRegisterForRemoteNotificationsWithError:(NSError *)error {
 	dispatch_async(dispatch_get_main_queue(), ^{
 		[jcMenu setMenuChangedMessagesEnabled:NO];
 
-		NSArray *returnedDisplayStrings = [flycutOperator previousDisplayStrings:[[NSUserDefaults standardUserDefaults] integerForKey:@"displayNum"] containing:search];
+		int displayNum = (int)[[NSUserDefaults standardUserDefaults] integerForKey:@"displayNum"];
+		NSArray *indexes = [flycutOperator previousIndexes:displayNum containing:search];
 
 		NSArray *menuItems = [[[jcMenu itemArray] reverseObjectEnumerator] allObjects];
-
-		NSArray *clipStrings = [[returnedDisplayStrings reverseObjectEnumerator] allObjects];
 
 		// Figure out if the number of menu items is changing and add or remove entries as necessary.
 		// If we remove all of them and add all new ones, the menu won't redraw if the count is unchanged, so just reuse them by changing their title.
 		int oldItems = [menuItems count]-jcMenuBaseItemsCount;
-		int newItems = [clipStrings count];
-        DLog(@"list=%@, oldItems=%d, newItems=%d", returnedDisplayStrings, oldItems, newItems);
-        
+        DLog(@"indexes=%@, oldItems=%d", indexes, oldItems);
+
         for ( int i = 0; i < oldItems; i++ )
             [jcMenu removeItemAtIndex:0];
-        
-        for ( int i = 0; i < newItems; i++ )
+
+        // previousIndexes is newest-first. Inserting at 0 from the other end leaves the newest item at the top.
+        for ( NSNumber *indexNumber in [indexes reverseObjectEnumerator] )
         {
-            NSMenuItem *item;
-            item = [[NSMenuItem alloc] initWithTitle:[clipStrings objectAtIndex:i]
-                                              action:@selector(processMenuClippingSelection:)
-                                       keyEquivalent:@""];
+            FlycutClipping *clipping = [flycutOperator clippingAtPosition:[indexNumber intValue]];
+            if ( !clipping )
+                continue;
+            NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:[clipping displayString]
+                                                          action:@selector(processMenuClippingSelection:)
+                                                   keyEquivalent:@""];
             [item setTarget:self];
             [item setEnabled:YES];
+            if ( [clipping isImage] ) {
+                NSImage *thumb = [self menuThumbnailForClipping:clipping];
+                if ( thumb )
+                    [item setImage:thumb];
+            }
             [jcMenu insertItem:item atIndex:0];
             // Way back in 0.2, failure to release the new item here was causing a quite atrocious memory leak.
             [item release];
@@ -1355,6 +1499,93 @@ didFailToRegisterForRemoteNotificationsWithError:(NSError *)error {
     [self setPBBlockCount:[NSNumber numberWithInt:[jcPasteboard changeCount]]];
 }
 
+- (NSImage *)menuThumbnailForClipping:(FlycutClipping *)clipping
+{
+	if ( ![clipping isImage] )
+		return nil;
+	if ( !menuThumbnailCache ) {
+		menuThumbnailCache = [[NSCache alloc] init];
+		[menuThumbnailCache setCountLimit:100];
+	}
+	NSString *key = [clipping imageFileName];
+	if ( key.length == 0 )
+		key = [NSString stringWithFormat:@"mem-%lu", (unsigned long)[[clipping imageData] hash]];
+	NSImage *cached = [menuThumbnailCache objectForKey:key];
+	if ( cached )
+		return cached;
+
+	NSImage *full = [[NSImage alloc] initWithData:[clipping imageData]];
+	if ( !full )
+		return nil;
+	NSSize target = NSMakeSize(40, 40);
+	NSImage *thumb = [[NSImage alloc] initWithSize:target];
+	[thumb lockFocus];
+	[[NSColor colorWithCalibratedWhite:0.92 alpha:1.0] set];
+	NSRectFill(NSMakeRect(0, 0, target.width, target.height));
+	NSSize source = [full size];
+	if ( source.width < 1 )
+		source.width = 1;
+	if ( source.height < 1 )
+		source.height = 1;
+	CGFloat scale = MIN(target.width / source.width, target.height / source.height);
+	NSSize drawn = NSMakeSize(source.width * scale, source.height * scale);
+	NSRect dest = NSMakeRect((target.width - drawn.width) / 2.0, (target.height - drawn.height) / 2.0, drawn.width, drawn.height);
+	[full drawInRect:dest fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+	[thumb unlockFocus];
+	[thumb setTemplate:NO];
+	[full release];
+	[menuThumbnailCache setObject:thumb forKey:key];
+	return [thumb autorelease];
+}
+
+- (void)addImageClippingToPasteboard:(FlycutClipping *)clipping
+{
+	NSData *data = [clipping imageData];
+	if ( data.length == 0 )
+		return;
+	NSString *type = [clipping type];
+	if ( type.length == 0 )
+		type = NSPasteboardTypePNG;
+
+	NSMutableArray *types = [NSMutableArray arrayWithObject:type];
+	NSImage *image = [[NSImage alloc] initWithData:data];
+	NSData *tiff = [image TIFFRepresentation];
+	NSData *png = nil;
+	if ( ![type isEqualToString:NSPasteboardTypePNG] && ![type isEqualToString:@"public.png"] ) {
+		NSString *pngType = nil;
+		int ignoredWidth = 0;
+		int ignoredHeight = 0;
+		if ( FlycutStoreImageData(data, nil, &png, &pngType, &ignoredWidth, &ignoredHeight) )
+			[types addObject:NSPasteboardTypePNG];
+		else
+			png = nil;
+	}
+	if ( tiff )
+		[types addObject:NSPasteboardTypeTIFF];
+
+	[jcPasteboard declareTypes:types owner:nil];
+	[jcPasteboard setData:data forType:type];
+	if ( png )
+		[jcPasteboard setData:png forType:NSPasteboardTypePNG];
+	if ( tiff )
+		[jcPasteboard setData:tiff forType:NSPasteboardTypeTIFF];
+	[image release];
+	[self setPBBlockCount:[NSNumber numberWithInt:[jcPasteboard changeCount]]];
+}
+
+- (BOOL)placeClippingOnPasteboard:(FlycutClipping *)clipping
+{
+	if ( [clipping isImage] ) {
+		[self addImageClippingToPasteboard:clipping];
+		return YES;
+	}
+	if ( [clipping contents].length > 0 ) {
+		[self addClipToPasteboard:[clipping contents]];
+		return YES;
+	}
+	return NO;
+}
+
 -(void) stackDown
 {
 	if ( [flycutOperator setStackPositionToOneLessRecent] ) {
@@ -1365,7 +1596,13 @@ didFailToRegisterForRemoteNotificationsWithError:(NSError *)error {
 -(void) fillBezel
 {
     FlycutClipping* clipping = [flycutOperator clippingAtStackPosition];
-    [bezel setText:[NSString stringWithFormat:@"%@", [clipping contents]]];
+    if ( [clipping isImage] ) {
+        NSImage *image = [[NSImage alloc] initWithData:[clipping imageData]];
+        [bezel setPreviewImage:image caption:[clipping displayString]];
+        [image release];
+    } else {
+        [bezel setText:[NSString stringWithFormat:@"%@", [clipping contents]]];
+    }
     [bezel setCharString:[NSString stringWithFormat:@"%d of %d", [flycutOperator stackPosition] + 1, [flycutOperator jcListCount]]];
     NSString *localizedName = [clipping appLocalizedName];
     if ( nil == localizedName )
@@ -1487,6 +1724,7 @@ didFailToRegisterForRemoteNotificationsWithError:(NSError *)error {
 - (void) dealloc {
 	[bezel release];
 	[srTransformer release];
+	[menuThumbnailCache release];
 	[super dealloc];
 }
 

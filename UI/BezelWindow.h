@@ -40,6 +40,8 @@
 	RoundRecTextField	*textField;
 	RoundRecTextField	*charField;
 	NSImageView			*iconView;
+	NSImageView			*previewImageView;
+	BOOL				showingImage;
 	id<BezelWindowDelegate>	delegate;
     Boolean             color;
 }
@@ -57,6 +59,8 @@
 - (void)setTitle:(NSString *)newTitle;
 - (NSString *)text;
 - (void)setText:(NSString *)newText;
+// Shows the image in the clipping area and a one-line caption under it. Pass nil to go back to text.
+- (void)setPreviewImage:(NSImage *)image caption:(NSString *)caption;
 - (void)setColor:(BOOL)value;
 - (void)setCharString:(NSString *)newChar;
 - (void)setAlpha:(float)newValue;

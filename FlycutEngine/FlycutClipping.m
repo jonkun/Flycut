@@ -216,17 +216,142 @@
     return clipHasName;
 }
 
+-(BOOL)isImage
+{
+    return clipImageData.length > 0;
+}
+
+-(NSData *)imageData
+{
+    return clipImageData;
+}
+
+-(NSString *)imageFileName
+{
+    return clipImageFile;
+}
+
+-(NSString *)imageFileExtension
+{
+    if ([clipType isEqualToString:@"public.jpeg"] || [clipType isEqualToString:@"public.jpg"])
+        return @"jpg";
+    if ([clipType isEqualToString:@"public.gif"] || [clipType isEqualToString:@"com.compuserve.gif"])
+        return @"gif";
+    return @"png";
+}
+
+-(int)imageWidth
+{
+    return imageWidth;
+}
+
+-(int)imageHeight
+{
+    return imageHeight;
+}
+
+-(void)setImageData:(NSData *)data width:(int)width height:(int)height fileName:(NSString *)fileName
+{
+    if (data != clipImageData) {
+        [data retain];
+        [clipImageData release];
+        clipImageData = data;
+    }
+    imageWidth = width;
+    imageHeight = height;
+    if (fileName != clipImageFile) {
+        NSString *safeName = [fileName lastPathComponent];
+        [safeName retain];
+        [clipImageFile release];
+        clipImageFile = safeName;
+    }
+    [self resetDisplayString];
+}
+
++(NSString *)imageStorageDirectory
+{
+    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
+    NSString *base = [paths count] > 0 ? [paths objectAtIndex:0] : NSTemporaryDirectory();
+    return [base stringByAppendingPathComponent:@"Flycut/Images"];
+}
+
+-(BOOL)writeImageToStorage
+{
+    if (clipImageData.length == 0)
+        return NO;
+    if (clipImageFile.length > 0)
+        return YES;
+
+    NSString *directory = [[self class] imageStorageDirectory];
+    NSFileManager *files = [NSFileManager defaultManager];
+    if (![files createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil])
+        return NO;
+
+    NSString *fileName = [NSString stringWithFormat:@"%@.%@", [[NSUUID UUID] UUIDString], [self imageFileExtension]];
+    NSString *path = [directory stringByAppendingPathComponent:fileName];
+    if (![clipImageData writeToFile:path atomically:YES])
+        return NO;
+
+    [fileName retain];
+    [clipImageFile release];
+    clipImageFile = fileName;
+    return YES;
+}
+
+-(void)loadStoredImageFile:(NSString *)fileName width:(int)width height:(int)height
+{
+    NSString *safeName = [fileName lastPathComponent];
+    if (safeName.length == 0)
+        return;
+    NSString *path = [[[self class] imageStorageDirectory] stringByAppendingPathComponent:safeName];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    // Keep the file name when the bytes are missing so a later save does not drop the reference.
+    [self setImageData:data width:width height:height fileName:safeName];
+}
+
++(void)removeStoredImageFilesExcept:(NSSet *)fileNames
+{
+    NSString *directory = [self imageStorageDirectory];
+    NSArray *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:directory error:nil];
+    NSSet *imageExtensions = [NSSet setWithObjects:@"png", @"jpg", @"jpeg", @"gif", nil];
+    for (NSString *file in files) {
+        if (fileNames && [fileNames containsObject:file])
+            continue;
+        if (![imageExtensions containsObject:[[file pathExtension] lowercaseString]])
+            continue;
+        [[NSFileManager defaultManager] removeItemAtPath:[directory stringByAppendingPathComponent:file] error:nil];
+    }
+}
+
 - (BOOL)isEqual:(id)other {
     if (other == self)
         return YES;
     if (!other || ![other isKindOfClass:[self class]])
         return NO;
     FlycutClipping * otherClip = (FlycutClipping *)other;
-    return (/*[self.type isEqualToString:otherClip.type] &&*/ // Type is under-utilized a this time and will mismatch on cross-device (macOS <-> iOS) usage.  This should be revisited once we have support for more than just raw text clippings.
-            [self.contents isEqualToString:otherClip.contents]);
+    BOOL selfIsImage = [self isImage] || clipImageFile.length > 0;
+    BOOL otherIsImage = [otherClip isImage] || [otherClip imageFileName].length > 0;
+    if (selfIsImage || otherIsImage) {
+        if (!selfIsImage || !otherIsImage)
+            return NO;
+        // Same pixels are the same clip, including a recopy that got a new file name.
+        if (clipImageData && [otherClip imageData])
+            return [clipImageData isEqualToData:[otherClip imageData]];
+        // One side may not have loaded the file (it lives on the machine that copied it).
+        if (clipImageFile && [otherClip imageFileName])
+            return [clipImageFile isEqualToString:[otherClip imageFileName]];
+        return NO;
+    }
+    return [self.contents isEqualToString:otherClip.contents];
 }
 
-
+- (NSUInteger)hash {
+    if (clipImageData)
+        return [clipImageData hash];
+    if (clipImageFile)
+        return [clipImageFile hash];
+    return [clipContents hash];
+}
 
 -(void) dealloc
 {
@@ -234,6 +359,8 @@
     [clipType release];
     [appLocalizedName release];
     [appBundleURL release];
+    [clipImageData release];
+    [clipImageFile release];
     clipDisplayLength = 0;
     [clipDisplayString release];
     clipHasName = 0;

@@ -14,6 +14,16 @@
 
 static const float lineHeight = 16;
 
+// Clicks pass through to the bezel window so double-click paste still works on the preview.
+@interface FlycutPassthroughImageView : NSImageView
+@end
+
+@implementation FlycutPassthroughImageView
+- (NSView *)hitTest:(NSPoint)point {
+	return nil;
+}
+@end
+
 @implementation BezelWindow
 
 - (id)initWithContentRect:(NSRect)contentRect
@@ -96,6 +106,15 @@ static const float lineHeight = 16;
 		[textField.textField setBordered:NO];
 		[textField.textField setAlignment:NSLeftTextAlignment];
 
+		previewImageView = [[FlycutPassthroughImageView alloc] initWithFrame:textFrame];
+		[previewImageView setImageScaling:NSImageScaleProportionallyUpOrDown];
+		[previewImageView setImageAlignment:NSImageAlignCenter];
+		[previewImageView setImageFrameStyle:NSImageFrameNone];
+		[previewImageView setEditable:NO];
+		[previewImageView setAnimates:YES];
+		[previewImageView setHidden:YES];
+		[[self contentView] addSubview:previewImageView];
+
 		NSRect charFrame = [self charFrame];
 		charField = [[RoundRecTextField alloc] initWithFrame:charFrame];
 		[[self contentView] addSubview:charField];
@@ -128,10 +147,7 @@ static const float lineHeight = 16;
     if (nil == sourceText || 0 == sourceText.length)
         showSourceField = false;
 
-    NSRect textFrame = [self textFrame];
-    [textField setFrame:textFrame];
-    NSRect charFrame = [self charFrame];
-    [charField setFrame:charFrame];
+    [self layoutBezelFields];
     if (showSourceField)
         [sourceFieldBackground.background.layer setBackgroundColor:CGColorCreateGenericRGB(0.1, 0.1, 0.1, 0.45)];
     else if ( nil != sourceFieldApp )
@@ -188,6 +204,34 @@ static const float lineHeight = 16;
     return NSMakeRect(([self frame].size.width - (3 * lineHeight)) / 2, 7, 4 * lineHeight, 1.2 * lineHeight);
 }
 
+- (void)layoutBezelFields
+{
+	if (!textField)
+		return;
+
+	NSRect textFrame = [self textFrame];
+	if (showingImage) {
+		NSRect captionFrame = textFrame;
+		captionFrame.size.height = 1.4 * lineHeight;
+		NSRect imageFrame = textFrame;
+		imageFrame.origin.y += captionFrame.size.height + 4;
+		imageFrame.size.height = MAX(0, imageFrame.size.height - captionFrame.size.height - 4);
+		[textField setFrame:captionFrame];
+		[previewImageView setFrame:NSInsetRect(imageFrame, 8, 4)];
+	} else {
+		[textField setFrame:textFrame];
+	}
+	[charField setFrame:[self charFrame]];
+}
+
+- (void)setFrame:(NSRect)frameRect display:(BOOL)flag
+{
+	[super setFrame:frameRect display:flag];
+	[self layoutBezelFields];
+	if (textField)
+		[self setBackgroundColor:[self backgroundColor]];
+}
+
 -(NSColor*) backgroundColor
 {
     return [self sizedBezelBackgroundWithRadius:25.0 withAlpha:[[NSUserDefaults standardUserDefaults] floatForKey:@"bezelAlpha"]];
@@ -226,6 +270,7 @@ static const float lineHeight = 16;
 
 - (void)setText:(NSString *)newText
 {
+	[self clearPreviewImage];
     // The Bezel gets slow when newText is huge.  Probably the retain.
     // Since we can't see that much of it anyway, trim to 2000 characters.
     if ([newText length] > 2000)
@@ -233,7 +278,37 @@ static const float lineHeight = 16;
 	[newText retain];
 	[bezelText release];
 	bezelText = newText;
+	[textField.textField setAlignment:NSLeftTextAlignment];
 	[textField.textField setStringValue:bezelText];
+}
+
+- (void)clearPreviewImage
+{
+	if (!showingImage && previewImageView.hidden)
+		return;
+	showingImage = NO;
+	[previewImageView setImage:nil];
+	[previewImageView setHidden:YES];
+	[self layoutBezelFields];
+}
+
+- (void)setPreviewImage:(NSImage *)image caption:(NSString *)caption
+{
+	if (!image) {
+		[self setText:caption ? caption : @""];
+		return;
+	}
+	showingImage = YES;
+	[previewImageView setImage:image];
+	[previewImageView setHidden:NO];
+	if (!caption)
+		caption = @"";
+	[caption retain];
+	[bezelText release];
+	bezelText = caption;
+	[textField.textField setAlignment:NSCenterTextAlignment];
+	[textField.textField setStringValue:bezelText];
+	[self layoutBezelFields];
 }
 
 - (void)setSourceIcon:(NSImage *)newSourceIcon
@@ -317,6 +392,7 @@ static const float lineHeight = 16;
 	[textField release];
 	[charField release];
 	[iconView release];
+	[previewImageView release];
 	[super dealloc];
 }
 

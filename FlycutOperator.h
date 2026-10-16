@@ -47,12 +47,21 @@
 	BOOL issuedRememberResizeWarning;
 }
 
+// A string is ancillary when the pasteboard image is the thing the user copied:
+// empty, a URL, or a single image-file path. Real text is not ancillary.
++ (BOOL)stringIsAncillaryToImage:(NSString * _Nullable)string NS_SWIFT_NAME(stringIsAncillary(toImage:));
+
 // Basic functionality
 -(int)indexOfClipping:(NSString*)contents ofType:(NSString*)type fromApp:(NSString *)appName withAppBundleURL:(NSString *)bundleURL;
 -(bool)addClipping:(NSString*)contents ofType:(NSString*)type fromApp:(NSString *)appName withAppBundleURL:(NSString *)bundleURL target:(id)selectorTarget clippingAddedSelector:(SEL)clippingAddedSelectorclippingAddedSelector;
+// searchText is an optional URL or file path stored with the image so it can be found later. Nil is fine.
+-(bool)addImageClipping:(NSData *)imageData width:(int)width height:(int)height searchText:(NSString * _Nullable)searchText ofType:(NSString *)type fromApp:(NSString *)appName withAppBundleURL:(NSString *)bundleURL target:(id)selectorTarget clippingAddedSelector:(SEL)clippingAddedSelector;
 -(int)stackPosition;
 -(NSString*)getPasteFromStackPosition;
 -(NSString*)getPasteFromIndex:(int) position;
+-(FlycutClipping * _Nullable)clippingAtPosition:(int)index NS_SWIFT_NAME(clipping(atPosition:));
+// Applies the paste-moves-to-top preference, then returns the clipping that should be placed on the pasteboard.
+-(FlycutClipping * _Nullable)clippingForPasteFromIndex:(int)position NS_SWIFT_NAME(clippingForPaste(fromIndex:));
 -(bool) saveFromStack;
 -(bool)clearItemAtStackPosition;
 -(void)clearList;

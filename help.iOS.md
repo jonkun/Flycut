@@ -6,7 +6,7 @@ Copy the same way as always.
 
 Paste the same way as always.
 
-Open Flycut to save the current clipping if it hasn't already been saved.  Tap any clipping in Flycut to place it on the clipboard.  Swipe right on any clipping to delete it, or swipe left to open it if it is a web link.
+Open Flycut to save the current clipping if it hasn't already been saved. Text and images are both kept. Tap any clipping in Flycut to place it on the clipboard. An image clipping shows a thumbnail, and tapping it puts the image back on the clipboard. Swipe right on any clipping to delete it, or swipe left to open it if it is a web link.
 
 **Details**
 

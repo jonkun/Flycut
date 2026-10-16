@@ -29,6 +29,12 @@
     NSString * appBundleURL;
 // The time
     NSInteger clipTimestamp;
+// PNG, JPEG, or GIF bytes when this clipping is an image. Nil for text.
+    NSData *clipImageData;
+// File name (not a path) of the bytes in Application Support, so history survives relaunch.
+    NSString *clipImageFile;
+    int imageWidth;
+    int imageHeight;
 }
 
 -(id) initWithContents:(NSString *)contents withType:(NSString *)type withDisplayLength:(int)displayLength withAppLocalizedName:(NSString *)localizedName withAppBundleURL:(NSString *)bundleURL withTimestamp:(NSInteger)timestamp;
@@ -53,6 +59,22 @@
 -(NSString *) appBundleURL;
 -(NSInteger) timestamp;
 -(BOOL) hasName;
+
+// Image clippings. Text clippings leave these empty.
+-(BOOL)isImage;
+-(NSData *)imageData;
+-(NSString *)imageFileName;
+-(NSString *)imageFileExtension;
+-(int)imageWidth;
+-(int)imageHeight;
+-(void)setImageData:(NSData *)data width:(int)width height:(int)height fileName:(NSString *)fileName;
+// Writes imageData into Application Support and records the file name. No-op once a file name is set.
+-(BOOL)writeImageToStorage;
+// Loads bytes for a file written earlier. Keeps the file name even when the file is missing.
+-(void)loadStoredImageFile:(NSString *)fileName width:(int)width height:(int)height;
++(NSString *)imageStorageDirectory;
+// Pass nil to delete every stored image file.
++(void)removeStoredImageFilesExcept:(NSSet *)fileNames;
 
 // Additional functions
 -(void) resetDisplayString;

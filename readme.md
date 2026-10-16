@@ -6,9 +6,9 @@
 **Description:**
 Flycut is a clean and simple clipboard manager for developers. It's based on an open source app called Jumpcut.
 
-On the Mac, every time you copy a code piece, Flycut stores it in history. Later, you can paste it using Shift-Command-V even if you have something different in your current clipboard. You can change the hotkey and other settings in preferences.
+On the Mac, every time you copy a code piece or an image, Flycut stores it in history. Later, you can paste it using Shift-Command-V even if you have something different in your current clipboard. Images show a thumbnail in the menu and a preview in the Bezel. You can change the hotkey and other settings in preferences.
 
-On iOS, every time you open Flycut, it checks for a new clipping and stores it in history. Later, you can tap any item in the history list to place it on the clipboard. You can also swipe web links in the history to open them without placing them on the clipboard.
+On iOS, every time you open Flycut, it checks for a new clipping and stores it in history, including images. Later, you can tap any item in the history list to place it on the clipboard. You can also swipe web links in the history to open them without placing them on the clipboard.
 
 Developed by developers for developers.
 

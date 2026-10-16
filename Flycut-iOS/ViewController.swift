@@ -320,6 +320,47 @@ class ViewController: UIViewController, UITableViewDelegate, UITableViewDataSour
 		return selection
 	}
 
+	/// Image bytes from the pasteboard when the copy is a picture rather than text.
+	/// Returns data, UTI, pixel width, and pixel height.
+	func copiedImage() -> (Data, String, Int32, Int32)? {
+		let pasteboard = UIPasteboard.general
+		guard pasteboard.hasImages else { return nil }
+		guard FlycutOperator.stringIsAncillary(toImage: pasteboard.string) else { return nil }
+
+		var data: Data?
+		var type = "public.png"
+		if let png = pasteboard.data(forPasteboardType: "public.png") {
+			data = png
+			type = "public.png"
+		} else if let jpeg = pasteboard.data(forPasteboardType: "public.jpeg") {
+			data = jpeg
+			type = "public.jpeg"
+		} else if let gif = pasteboard.data(forPasteboardType: "public.gif") {
+			data = gif
+			type = "public.gif"
+		} else if let image = pasteboard.image, let png = UIImagePNGRepresentation(image) {
+			data = png
+			type = "public.png"
+		}
+		guard let data = data, let image = UIImage(data: data) else { return nil }
+		let width = Int32((image.size.width * image.scale).rounded())
+		let height = Int32((image.size.height * image.scale).rounded())
+		guard width > 0, height > 0 else { return nil }
+		return (data, type, width, height)
+	}
+
+	func thumbnailForClipboardImage(_ data: Data) -> UIImage? {
+		guard let image = UIImage(data: data) else { return nil }
+		let maxSide: CGFloat = 56
+		let scale = min(maxSide / max(image.size.width, 1), maxSide / max(image.size.height, 1), 1)
+		let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+		UIGraphicsBeginImageContextWithOptions(size, false, 0)
+		image.draw(in: CGRect(origin: .zero, size: size))
+		let thumbnail = UIGraphicsGetImageFromCurrentImageContext()
+		UIGraphicsEndImageContext()
+		return thumbnail
+	}
+
 	@objc func checkForClippingAddedToClipboard()
 	{
 		pasteboardInteractionQueue.async {
@@ -330,7 +371,11 @@ class ViewController: UIViewController, UITableViewDelegate, UITableViewDataSour
 			{
 				self.pbCount = UIPasteboard.general.changeCount;
 
-				if UIPasteboard.general.types.contains("public.utf8-plain-text"),
+				if let image = self.copiedImage() {
+					let searchText = UIPasteboard.general.string
+					self.flycut.addImageClipping(image.0, width: image.2, height: image.3, searchText: searchText, ofType: image.1, fromApp: "iOS", withAppBundleURL: "iOS", target: nil, clippingAddedSelector: nil)
+				}
+				else if UIPasteboard.general.types.contains("public.utf8-plain-text"),
 				   let pasteboard = UIPasteboard.general.value(forPasteboardType: "public.utf8-plain-text") as? String
 				{
 					self.flycut.addClipping(pasteboard, ofType: "public.utf8-plain-text", fromApp: "iOS", withAppBundleURL: "iOS", target: nil, clippingAddedSelector: nil)
@@ -372,6 +417,12 @@ class ViewController: UIViewController, UITableViewDelegate, UITableViewDataSour
 		let item: MGSwipeTableCell = tableView.dequeueReusableCell(withIdentifier: "FlycutCell", for: indexPath) as! MGSwipeTableCell
 
 		item.textLabel?.text = flycut.previousDisplayStrings(Int32(indexPath.row + 1), containing: nil).last as! String?
+		item.imageView?.image = nil
+		if let clipping = flycut.clipping(atPosition: Int32(indexPath.row)), clipping.isImage,
+		   let data = clipping.imageData(), let thumbnail = thumbnailForClipboardImage(data as Data) {
+			item.imageView?.image = thumbnail
+			item.imageView?.contentMode = .scaleAspectFit
+		}
 
 		//configure left buttons
 		var removeAll:Bool = true
@@ -418,18 +469,31 @@ class ViewController: UIViewController, UITableViewDelegate, UITableViewDataSour
 		return item
 	}
 
+	func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
+		if let clipping = flycut.clipping(atPosition: Int32(indexPath.row)), clipping.isImage {
+			return 72
+		}
+		return 44
+	}
+
 	func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
 		if ( MGSwipeState.none == (tableView.cellForRow(at: indexPath) as! MGSwipeTableCell).swipeState ) {
 			tableView.deselectRow(at: indexPath, animated: true) // deselect before getPaste since getPaste may reorder the list
-			let content = flycut.getPasteFrom(Int32(indexPath.row))
-			print("Select: \(indexPath.row) \(content) OK")
+			let clipping = flycut.clippingForPaste(fromIndex: Int32(indexPath.row))
+			let content = clipping?.contents()
+			let imageData = (clipping?.isImage == true) ? clipping?.imageData() : nil
+			print("Select: \(indexPath.row) \(content ?? "") OK")
 
 			pasteboardInteractionQueue.async {
 				// Capture value before setting the pastboard for reasons noted below.
 				self.pbCount = UIPasteboard.general.changeCount
 
 				// This call will clear all other content types and appears to immediately increment the changeCount.
-				UIPasteboard.general.setValue(content as Any, forPasteboardType: "public.utf8-plain-text")
+				if let imageData = imageData, let image = UIImage(data: imageData as Data) {
+					UIPasteboard.general.image = image
+				} else {
+					UIPasteboard.general.setValue(content as Any, forPasteboardType: "public.utf8-plain-text")
+				}
 
 				// Apple documents that "UIPasteboard waits until the end of the current event loop before incrementing the change count", but this doesn't seem to be the case for the above call.  Handle both scenarios by doing a simple increment if unchanged and an update-to-match if changed.
 				if ( UIPasteboard.general.changeCount == self.pbCount )

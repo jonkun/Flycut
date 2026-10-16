@@ -245,9 +245,19 @@
     return NO;
 # else
     if ( [store jcListCount] > index ) {
+        FlycutClipping *savedClipping = [store clippingAtPosition:index];
+        BOOL savingImage = [savedClipping isImage];
+        NSData *imageBytes = savingImage ? [savedClipping imageData] : nil;
+        if (savingImage && imageBytes.length == 0)
+            return NO;
+
         // Get text from clipping store.
-        NSString *pbFullText = [self clippingStringWithCount:index inStore:store];
-        pbFullText = [pbFullText stringByReplacingOccurrencesOfString:@"\r" withString:@"\r\n"];
+        NSString *pbFullText = nil;
+        if (!savingImage) {
+            pbFullText = [self clippingStringWithCount:index inStore:store];
+            pbFullText = [pbFullText stringByReplacingOccurrencesOfString:@"\r" withString:@"\r\n"];
+        }
+        NSString *fileExtension = savingImage ? [savedClipping imageFileExtension] : @"txt";
 
         if (!dateFormatterForFilename) {
             // Date formatters are time-expensive to create, so create once and reuse.
@@ -260,8 +270,8 @@
         NSString *dateString = [dateFormatterForFilename stringFromDate:currentDate];
 
         // Make a file name
-        NSString *fileName = [NSString stringWithFormat:@"%@%@Clipping %@.txt",
-                              prefix, store == favoritesStore ? @"Favorite " : @"", dateString];
+        NSString *fileName = [NSString stringWithFormat:@"%@%@Clipping %@.%@",
+                              prefix, store == favoritesStore ? @"Favorite " : @"", dateString, fileExtension];
 
         // Make a subdirectory, if doing autosave, to avoid a directory with too many files in it as that can make Finder effectively hang on launch if that directory were the desktop.
         NSString *subdirectoryString = nil;
@@ -285,7 +295,7 @@
             NSSavePanel* panel = [NSSavePanel savePanel];
             [panel setNameFieldStringValue:fileName];
             [panel setLevel:NSModalPanelWindowLevel];
-            [panel setAllowedFileTypes:@[@"txt"]];
+            [panel setAllowedFileTypes:@[fileExtension]];
             if ([panel runModal] == NSFileHandlingPanelOKButton)
             {
                 fileNameWithPath = [panel URL].path;
@@ -334,6 +344,9 @@
         }
 
         // Save content to the file
+        if (savingImage)
+            return [imageBytes writeToFile:fileNameWithPath atomically:YES];
+
         [pbFullText writeToFile:fileNameWithPath
                   atomically:NO
                     encoding:NSNonLossyASCIIStringEncoding
@@ -479,24 +492,85 @@
 							  atTimestamp:[[NSDate date] timeIntervalSince1970]];
 }
 
++ (BOOL)stringIsAncillaryToImage:(NSString *)string
+{
+	if (string == nil)
+		return YES;
+	NSString *trimmed = [string stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+	if (trimmed.length == 0)
+		return YES;
+	// More than one line is copied text, even when a picture of that text is also on the pasteboard.
+	if ([trimmed rangeOfCharacterFromSet:[NSCharacterSet newlineCharacterSet]].location != NSNotFound)
+		return NO;
+
+	NSURL *url = [NSURL URLWithString:trimmed];
+	NSString *scheme = [[url scheme] lowercaseString];
+	if ([scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"] || [scheme isEqualToString:@"file"])
+		return YES;
+
+	NSString *extension = [[trimmed pathExtension] lowercaseString];
+	if (extension.length > 0) {
+		NSSet *imageExtensions = [NSSet setWithObjects:@"png", @"jpg", @"jpeg", @"gif", @"tif", @"tiff", @"bmp", @"heic", @"heif", @"webp", nil];
+		if ([imageExtensions containsObject:extension])
+			return YES;
+	}
+	return NO;
+}
+
 -(bool)addClipping:(NSString*)contents ofType:(NSString*)type fromApp:(NSString *)appName withAppBundleURL:(NSString *)bundleURL target:(id)selectorTarget clippingAddedSelector:(SEL)clippingAddedSelector
 {
-	if ( [clippingStore jcListCount] == 0 || ! [contents isEqualToString:[clippingStore clippingContentsAtPosition:0]]) {
-		bool success = [clippingStore addClipping:contents
-										   ofType:type
-							 fromAppLocalizedName:appName
-								 fromAppBundleURL:bundleURL
-									  atTimestamp:[[NSDate date] timeIntervalSince1970]];
+	FlycutClipping *top = [clippingStore jcListCount] > 0 ? [clippingStore clippingAtPosition:0] : nil;
+	// An image whose label happens to match this text is a different clipping.
+	if ( top && ![top isImage] && [contents isEqualToString:[top contents]] ) {
+		return NO;
+	}
+
+	bool success = [clippingStore addClipping:contents
+									   ofType:type
+						 fromAppLocalizedName:appName
+							 fromAppBundleURL:bundleURL
+								  atTimestamp:[[NSDate date] timeIntervalSince1970]];
 
 //		The below tracks our position down down down... Maybe as an option?
 //		if ( [clippingStore jcListCount] > 1 ) stackPosition++;
-		stackPosition = 0;
-        [selectorTarget performSelector:clippingAddedSelector];
-		[self actionAfterListModification];
+	stackPosition = 0;
+	[selectorTarget performSelector:clippingAddedSelector];
+	[self actionAfterListModification];
 
-		return success;
-    }
-	return  NO;
+	return success;
+}
+
+-(bool)addImageClipping:(NSData *)imageData width:(int)width height:(int)height searchText:(NSString *)searchText ofType:(NSString *)type fromApp:(NSString *)appName withAppBundleURL:(NSString *)bundleURL target:(id)selectorTarget clippingAddedSelector:(SEL)clippingAddedSelector
+{
+	if (imageData.length == 0 || width <= 0 || height <= 0)
+		return NO;
+
+	FlycutClipping *top = [clippingStore jcListCount] > 0 ? [clippingStore clippingAtPosition:0] : nil;
+	if (top && [top imageData] && [[top imageData] isEqualToData:imageData])
+		return NO;
+
+	NSString *label = [NSString stringWithFormat:@"Image %d×%d", width, height];
+	NSString *trimmedSearch = [searchText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+	NSString *contents = label;
+	if (trimmedSearch.length > 0 && ![trimmedSearch isEqualToString:label])
+		contents = [label stringByAppendingFormat:@"\n%@", trimmedSearch];
+
+	FlycutClipping *clipping = [[FlycutClipping alloc] initWithContents:contents
+															   withType:type ? type : @"public.png"
+													  withDisplayLength:displayLength
+												   withAppLocalizedName:appName
+													   withAppBundleURL:bundleURL
+														  withTimestamp:(NSInteger)[[NSDate date] timeIntervalSince1970]];
+	[clipping setImageData:imageData width:width height:height fileName:nil];
+	if (![clipping writeImageToStorage])
+		DLog(@"Image clipping will not survive relaunch; storing it for this session only.");
+	[clippingStore addClipping:clipping];
+	[clipping release];
+
+	stackPosition = 0;
+	[selectorTarget performSelector:clippingAddedSelector];
+	[self actionAfterListModification];
+	return YES;
 }
 
 - (void)willDeleteClippingFromStore:(id)store AtIndex:(int)index {
@@ -1005,12 +1079,31 @@
 		int rangeCap = [savedJCList count] < [store rememberNum] ? [savedJCList count] : [store rememberNum];
 		NSRange loadRange = NSMakeRange(0, rangeCap);
 		NSArray *toBeRestoredClips = [[[savedJCList subarrayWithRange:loadRange] reverseObjectEnumerator] allObjects];
-		for( NSDictionary *aSavedClipping in toBeRestoredClips)
-			[store addClipping:[aSavedClipping objectForKey:@"Contents"]
+		for( NSDictionary *aSavedClipping in toBeRestoredClips) {
+			NSString *imageFile = [aSavedClipping objectForKey:@"ImageFile"];
+			if ([imageFile isKindOfClass:[NSString class]] && imageFile.length > 0) {
+				NSString *contents = [aSavedClipping objectForKey:@"Contents"];
+				if (![contents isKindOfClass:[NSString class]])
+					contents = @"";
+				FlycutClipping *clipping = [[FlycutClipping alloc] initWithContents:contents
+																		   withType:[aSavedClipping objectForKey:@"Type"]
+																  withDisplayLength:[store displayLen]
+															   withAppLocalizedName:[aSavedClipping objectForKey:@"AppLocalizedName"]
+																   withAppBundleURL:[aSavedClipping objectForKey:@"AppBundleURL"]
+																	  withTimestamp:[[aSavedClipping objectForKey:@"Timestamp"] integerValue]];
+				[clipping loadStoredImageFile:imageFile
+										width:[[aSavedClipping objectForKey:@"ImageWidth"] intValue]
+									   height:[[aSavedClipping objectForKey:@"ImageHeight"] intValue]];
+				[store addClipping:clipping];
+				[clipping release];
+			} else {
+				[store addClipping:[aSavedClipping objectForKey:@"Contents"]
 							  ofType:[aSavedClipping objectForKey:@"Type"]
 				fromAppLocalizedName:[aSavedClipping objectForKey:@"AppLocalizedName"]
 					fromAppBundleURL:[aSavedClipping objectForKey:@"AppBundleURL"]
 						 atTimestamp:[[aSavedClipping objectForKey:@"Timestamp"] integerValue]];
+			}
+		}
 		return YES;
 	} else DLog(@"Not array");
 	return NO;
@@ -1069,6 +1162,52 @@
     return [clippingStore clippingAtPosition:stackPosition];
 }
 
+-(FlycutClipping *)clippingAtPosition:(int)index
+{
+	return [clippingStore clippingAtPosition:index];
+}
+
+-(FlycutClipping *)clippingForPasteFromIndex:(int)position
+{
+	if ( (position + 1) > [clippingStore jcListCount] )
+		return nil;
+	FlycutClipping *clipping = [clippingStore clippingAtPosition:position];
+	if ( [[NSUserDefaults standardUserDefaults] boolForKey:@"pasteMovesToTop"] ) {
+		[clippingStore clippingMoveToTop:position];
+		stackPosition = 0;
+		[self actionAfterListModification];
+	}
+	return clipping;
+}
+
+-(void)addImageFileNamesFromStore:(FlycutStore *)store toSet:(NSMutableSet *)names
+{
+	if (!store)
+		return;
+	for ( int i = 0 ; i < [store jcListCount] ; i++ ) {
+		NSString *fileName = [[store clippingAtPosition:i] imageFileName];
+		if (fileName.length > 0)
+			[names addObject:fileName];
+	}
+	for ( FlycutClipping *clipping in [store insertionJournal] ) {
+		if ([clipping imageFileName].length > 0)
+			[names addObject:[clipping imageFileName]];
+	}
+	for ( FlycutClipping *clipping in [store deletionJournal] ) {
+		if ([clipping imageFileName].length > 0)
+			[names addObject:[clipping imageFileName]];
+	}
+}
+
+-(void)pruneStoredImages
+{
+	NSMutableSet *keep = [NSMutableSet set];
+	[self addImageFileNamesFromStore:clippingStore toSet:keep];
+	[self addImageFileNamesFromStore:favoritesStore toSet:keep];
+	[self addImageFileNamesFromStore:stashedStore toSet:keep];
+	[FlycutClipping removeStoredImageFilesExcept:keep];
+}
+
 - (void)saveStore:(FlycutStore *)store toKey:(NSString *)key onDict:(NSMutableDictionary *)saveDict {
     NSMutableArray *jcListArray = [NSMutableArray array];
     for ( int i = 0 ; i < [store jcListCount] ; i++ )
@@ -1090,6 +1229,15 @@
         int timestamp = [clipping timestamp];
         if ( timestamp > 0 )
             [dict setObject:[NSNumber numberWithInt:timestamp] forKey:@"Timestamp"];
+
+        // Image bytes stay in Application Support. The synced store only records the file name,
+        // because the whole store is one CloudKit record and cannot hold screenshot-sized data.
+        NSString *imageFile = [clipping imageFileName];
+        if ( imageFile.length > 0 ) {
+            [dict setObject:imageFile forKey:@"ImageFile"];
+            [dict setObject:[NSNumber numberWithInt:[clipping imageWidth]] forKey:@"ImageWidth"];
+            [dict setObject:[NSNumber numberWithInt:[clipping imageHeight]] forKey:@"ImageHeight"];
+        }
 
         [jcListArray addObject:dict];
     }
@@ -1118,15 +1266,19 @@
 
     [[NSUserDefaults standardUserDefaults] setObject:saveDict forKey:@"store"];
     [[NSUserDefaults standardUserDefaults] synchronize];
+	[self pruneStoredImages];
 }
 
 - (void)applicationWillTerminate {
 	if ( [[NSUserDefaults standardUserDefaults] integerForKey:@"savePreference"] >= 1 ) {
 		DLog(@"Saving on exit");
         [self saveEngine];
+		// saveEngine prunes only when the store was modified. Also drop files left by older sessions.
+		[self pruneStoredImages];
     } else {
         // Remove clips from store
         [[NSUserDefaults standardUserDefaults] setValue:[NSDictionary dictionary] forKey:@"store"];
+		[FlycutClipping removeStoredImageFilesExcept:nil];
         DLog(@"Saving preferences on exit");
         [[NSUserDefaults standardUserDefaults] synchronize];
     }

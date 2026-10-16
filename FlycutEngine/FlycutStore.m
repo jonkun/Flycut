@@ -345,6 +345,19 @@
     return returnArray;
 }
 
+-(BOOL)clipping:(FlycutClipping *)clipping matchesSearch:(NSString *)search
+{
+    if (search.length == 0)
+        return YES;
+    NSString *contents = [clipping contents];
+    if (contents && [contents rangeOfString:search options:NSCaseInsensitiveSearch].location != NSNotFound)
+        return YES;
+    NSString *display = [clipping displayString];
+    if (display && [display rangeOfString:search options:NSCaseInsensitiveSearch].location != NSNotFound)
+        return YES;
+    return NO;
+}
+
 -(NSArray *) previousDisplayStrings:(int)howMany
 {
     return [self previousDisplayStrings:howMany containing:nil];
@@ -362,15 +375,13 @@
     if (nil != search && search.length > 0) {
         subArray = [jcList copy];
         enumerator = [subArray objectEnumerator];
-        int index = 0;
         while ( aClipping = [enumerator nextObject] ) { // Forward enumerator so we find the most recent N matches
-            if ([[self clippingContentsAtPosition:index] rangeOfString:search options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            if ([self clipping:aClipping matchesSearch:search]) {
                 [returnArray insertObject:[aClipping displayString] atIndex:0];
                 howMany--;
                 if (0 == howMany)
                     break;
             }
-            index++;
         }
         return [[returnArray reverseObjectEnumerator] allObjects]; // Reverse the results since the caller expects the most recent to be last.
     }
@@ -402,7 +413,7 @@
         enumerator = [subArray objectEnumerator];
         int index = 0;
         while ( aClipping = [enumerator nextObject] ) { // Forward enumerator so we find the most recent N matches
-            if ([[self clippingContentsAtPosition:index] rangeOfString:search options:NSCaseInsensitiveSearch].location != NSNotFound) {
+            if ([self clipping:aClipping matchesSearch:search]) {
                 [returnArray addObject:[NSNumber numberWithInt:index]];
                 howMany--;
                 if (0 == howMany)
@@ -413,7 +424,9 @@
     }
     else
     {
-        for ( int i = 0 ; i < howMany ; i++ )
+        int available = (int)[jcList count];
+        int limit = howMany < available ? howMany : available;
+        for ( int i = 0 ; i < limit ; i++ )
             [returnArray addObject:[NSNumber numberWithInt:i]];
     }
     return returnArray;
